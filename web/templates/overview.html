@@ -25,9 +25,18 @@
      a sibling (not a <button>), so it stays fully visible. */
   #hero-cmds.cmds-busy button{pointer-events:none;opacity:.45}
 </style>
-<div class="mb-6">
-  <h1 class="text-2xl font-bold text-white">{{ t('overview_title') }}</h1>
-  <p class="text-slate-400 text-sm mt-1">{{ vehicle.car_type if vehicle else 'LeapMotor' }} {{ t('live_status') }}</p>
+<div class="mb-6 flex flex-wrap items-start justify-between gap-3">
+  <div>
+    <h1 class="text-2xl font-bold text-white">{{ t('overview_title') }}</h1>
+    <p class="text-slate-400 text-sm mt-1">{{ vehicle.car_type if vehicle else 'LeapMotor' }} {{ t('live_status') }}</p>
+  </div>
+  {# Whether the data on this page can be trusted — beside the heading, where a glance lands
+     first, on its own refresh so it stays current between the cards' own reloads. #}
+  {% if data_link %}
+  <div id="link-pill" class="w-full sm:w-auto sm:max-w-[36rem]" hx-get="api/link-pill" hx-trigger="every 30s" hx-swap="innerHTML">
+    {% include "partials/link_pill.html" %}
+  </div>
+  {% endif %}
 </div>
 
 <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
@@ -375,8 +384,9 @@ document.addEventListener('htmx:afterRequest', function(e) {
   sending = false;                                   // the HTTP request finished (cloud accepted / refused)
   var name = (path.split('api/command/')[1] || '').replace(/\/$/, '');
   var res = document.getElementById('hero-cmd-result');
-  if (e.detail.successful && res && !res.querySelector('[data-warn]')) {
-    res.innerHTML = '';                              // no "✓ Done": the pill + the ⏳ are the only feedback
+  var accepted = res && res.querySelector('[data-accepted]');
+  if (e.detail.successful && res && (accepted || !res.querySelector('[data-warn]'))) {
+    if (!accepted) res.innerHTML = '';                // retain the unconfirmed acceptance notice
     // Start the hidden 10 s floor + (movement only) the real-confirm wait. The ⏳ + red stay until both end.
     busySlot = slotOf(name); busyUntil = Date.now() + BUSY_MS; busyStart = Date.now();
     pendingExpect = CONFIRM[name] || null;

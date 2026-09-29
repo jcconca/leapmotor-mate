@@ -1,6 +1,118 @@
 # LeapMotor Mate — User Manual
 
-> **Mate version:** v3.19.1 · **Language:** English
+> **Mate version:** v4.7.0 · **Language:** English
+
+## New in 4.7.0
+
+**If you drive a Leapmotor with a range extender, Mate is now for you too.** Those models could only
+be read with the BetaTester build; their pages — the REEV page, the petrol per trip and per period,
+and the **REEV battery packs in the setup wizard** — are now on the ordinary add-on and the ordinary
+Docker image.
+
+**The petrol figure is the car's own.** Leapmotor's history holds, for each drive, how much petrol the
+car says it burned, and that is the number the official app shows you. Mate used to work it out
+itself, from the tank level at the two ends of the drive, and on the one drive where all three could
+be compared it came out **20.7% lower** — 3.886 L against 4.9. The car's figure wins now; the tank
+stays as the fallback for a drive Leapmotor has no record of, and each figure says which of the two
+you are looking at. ⚠️ **Some old trips will read differently after this update**: Leapmotor's window
+is about 28 days, so older drives keep the tank's answer, about a fifth lower.
+
+**A drive that burned nothing says so.** A range extender runs mostly on electricity, and those drives
+used to show nothing at all — the same as a drive whose tank Mate could not read. When the car's own
+counter reads the same value at both ends of a drive, that is a measurement, and it now reads `0 L`
+with *all electric* beside it. The blank is back to meaning only one thing: we do not know.
+
+**Regen is braking again.** On a range extender the generator recharges the battery while you drive,
+and Mate was counting that as energy recovered from braking — on the one drive we could measure, 89%
+of it was petrol. It no longer counts it. The figure stays hidden on a range extender, as before, but
+what is stored is now honest.
+
+**A trip is no longer damaged by a restart.** When Mate restarts in the middle of a drive, that trip
+is closed afterwards from what was already recorded. It used to lose its arrival odometer, its
+arrival fuel level and its whole regen figure, which read 0.00 kWh — **that last one on fully electric
+cars too**. All three are now rebuilt from the readings of the drive itself.
+
+Also: if your database refuses writes — some network shares do — the daily clean-up no longer retries
+on every single poll, which was 266 attempts in four hours on the installation that reported it.
+
+### New in 4.6.0
+
+At every poll while you drive, Mate reads the power going out of the battery, the temperature of its
+coldest cell, the range estimate and the outside air. It stored all of it and showed you almost none.
+Those four readings are now kept **with the trip itself** and put on its page: **Max power** and
+**Max regen**, the battery and outside temperature as the lowest-to-highest range of the drive rather
+than an average, and — under the duration — how much of it you spent **moving, standing still, and
+with no data**, as whole minutes that add up to the duration above them. Beside the average speed
+there is now the **median** of the same readings, which on a drive half motorway and half queue says
+more than the average does.
+
+The chart under the map is now **Trip data**: one chart in three bands on one time axis — speed and
+power, SoC and range, altitude and battery temperature — with one hover box across all of them. Its
+legend switches each line on and off, and your choice is remembered in this browser.
+
+The **top speed** is corrected: where Leapmotor's own record of that drive is matched to the trip, the
+figure is the car's, not Mate's fastest sample. Mate's readings are about eleven seconds apart, so a
+shorter peak was never in them — across 38 drives the sample was below the car's figure on 37.
+
+⚠️ **Trips you drove before this release get those readings once, when Mate starts**, and only from
+polls whose position row is still in the database. If you have set a GPS retention, most older trips
+will show a dash there: at 7 days about 3% of their points can be filled, at 30 days a fifth, at 90
+days seven tenths. With the default setting — keep everything — all of them are. Every trip from now
+on has the readings whatever that setting says.
+
+### New in 4.5.5
+
+Two things are removed in this release and none added, both about software updates for the car.
+The Overview's "OTA updates" row said **None** whenever your account's message inbox held no
+update notice — and it never knew anything about your car: Leapmotor tells the versions only to
+the account that owns it, and Mate is meant to run on an account the car is shared with, which
+receives no vehicle notices at all. So it said "None" for ever, and under that label "None" reads
+as "you are up to date". ⚠️ The **OTA Update Notice** entity in Home Assistant goes with it —
+across three owners' diagnostics it found zero notices in 44 successful scans — so if you built an
+automation on it, that automation will stop having an entity. Nothing else changes, and nothing is
+written to your data.
+
+### New in 4.5.4
+
+Nothing you see changes in this release: it is for us. Since 4.5.3 Mate stores the per-trip
+history Leapmotor's own cloud keeps — the same data the official app shows in its per-trip panel —
+and every record says how much petrol that drive burned. On a range-extender that is a second,
+independent figure beside the one Mate already reads from the car's own tank counter, and it was
+sitting in the database with no way to read it out. It now travels in the diagnostics pack, and the
+plain diagnostics text says whether that history arrived and whether the fuel field is populated or
+flat zero. On a battery-only car it is zero on every drive, which is the correct answer rather than
+a silence. Nothing is written to your data and nothing new is asked of the cloud.
+
+### New in 4.5.3
+
+Mate is faster again, and this time the reason is not the questions but the asking. Every read opened
+a brand-new connection to the database, which on a small read was most of what it cost; there is now
+one per thread. And the battery health estimate was reading every frame of every charge just to find
+out that nobody had been sitting in the car with the heater on — that is an indexed check now.
+Measured on a real add-on with ninety days of history: Overview 0.213 s → 0.048, Battery 0.129 →
+0.012, Charges 0.278 → 0.035, Statistics 0.489 → 0.163, the battery health figure 1.150 → 0.114.
+Nothing about what you see has changed.
+
+### New in 4.5.2
+
+Mate is faster, on every page. The slowest pages were asking the database the same question over and over — which time zone to show a time in, once per row; which car you are looking at, eighty-seven times to draw one card; whether the car has been used as a power outlet, by reading a week of data — and every one of those questions opened its own connection to the database. They are asked once now. The Battery page no longer waits for its two long sums: it appears, and the health and standby-drain figures fill in behind it. Measured on a real add-on with ninety days of history: Battery 3.526 s → 0.121 s, Statistics 2.679 → 0.448, Trips 1.696 → 0.406, Settings 1.613 → 0.413. Nothing about what you see has changed.
+
+### New in 4.5.1
+
+Mate loads faster. Deciding which buttons your car may show was reading the database 156 times for every page — once per control, three settings each, each one opening its own connection. It reads them once now. On an add-on running from an SD card that was most of the wait. The Cloud link card in Settings no longer builds itself for every load of the page: it fetches its own figures when you open it. And the menu keeps its place — picking an item from the bottom used to throw it back to the top, so the item you had just used was off screen again.
+
+### New in 4.5.0
+
+The Overview now says whether what it shows can be trusted. Beside the heading there is a small tile: **Mate → cloud → car**, two dots, and a hover (or a tap) on each word tells you the facts behind it — how long the poller has been running, whether the cloud is letting it in and when it last answered, when the car last sent a frame and what it was doing. While everything works, that is all it says. When Mate itself cannot fetch, the tile turns red and says what follows from it: when the last frame arrived, when the next attempt is, the error the cloud gave, and — only when the cloud blamed the password — that the password is the thing to check. Until now a cloud that had been refusing an installation's logins for nine days looked exactly like a car asleep in a garage: "last seen 9 h ago", and nothing else.
+
+Home Assistant hears the same thing. Each car gets a **Data Link** sensor (`sensor.<car>_data_link`) that reads `fresh`, `no_new_data`, `age_unknown`, `login_refused` or `fetch_failed`, with since-when, the error and the next attempt as attributes. It is published even while Mate is waiting out a refused login, and it expires by itself after 21 minutes — so `unavailable` means the poller has stopped, not that the car is quiet. One automation is enough to be told: notify me when it has been neither `fresh` nor `no_new_data` for an hour.
+
+Settings has a new **📡 Cloud link** card: the last 24 hours as a strip of five-minute windows, and seven days of counts — polls, how many carried a current frame, how many failed, how many the cloud refused, and how many logins each part of Mate spent. Every cell and every label explains itself on a hover. The same table now goes into the diagnostics bundle.
+
+Two smaller things. An age past a day is written in days: nine days without contact used to read "216h ago". And Mate's own health check no longer reports a dead process while the cloud is refusing to let it in — it is waiting, and it now says so.
+
+Under a trip's energy, the label that read **getEC** now reads **Measured by the car**: it was the name of a cloud endpoint, not a word for people. **Leapmotor cloud** becomes **Leapmotor history** for the same reason — both figures come from the cloud, and what differs is which one it is: the trip as the cloud's own history records it, or the energy the car itself metered over that window. **Mate estimate** is unchanged.
+
 > This manual is written for people who *use* Mate, not for those who develop it. It explains how to
 > set it up from scratch and what every page does. For the internal technical details, see `ARCHITECTURE.md`.
 
@@ -47,9 +159,12 @@ scheduling…) and, if you like, integrate the data with **Home Assistant** (via
 - **It does not talk to the car directly.** Everything goes through the Leapmotor cloud. When Mate
   "queries" the cloud (polling) it reads the **last known status**: it does *not* wake the car up and
   does *not* drain the battery. It's a safe and inexpensive operation.
-- **Only 100% electric cars (BEV).** The supported models are **T03, B05, B10, C10** in their
-  electric versions. The **REEV** versions (with a petrol range extender) are **not** supported: the
-  energy/consumption/cost calculations would use the wrong battery capacity and come out distorted.
+- **Battery-electric and range-extender.** The supported models are **T03, B05, B10, C10**. Their
+  **REEV** versions, with a petrol range extender, are supported from **4.7.0**: the REEV page, the
+  petrol figures per trip and per period, and the REEV battery packs in the wizard are all on the
+  ordinary build. A range extender does **not** get a regen figure — with a generator refilling the
+  pack while you drive, charging cannot be told apart from braking — and the electric rate of a
+  generator drive stays on the BetaTester build, where it can be watched.
 - **European cloud only (Leapmotor International / Stellantis).** Accounts registered on servers of
   other regions (e.g. China) cannot log in. Outside Europe, Mate currently can't be used.
 - **It is not an accounting tool.** It estimates cost *from the telemetry*; it does not keep track of
@@ -332,7 +447,7 @@ Mate looks its position up against [Open-Meteo](https://open-meteo.com) — at m
 minutes or 10 km, whichever comes first — and shows the reading next to the cabin one. It is **off by
 default**, because the lookup sends the car's position to Open-Meteo: the single opt-in is in
 *Settings → trip defaults*. The same reading becomes an **Outside Temp** entity in Home Assistant and
-gives each trip its own departure and arrival figure.
+gives each trip readings along the way, for its highest and lowest temperature.
 
 #### The three temperatures: cabin, A/C target, battery
 Not every Leapmotor sends all three. Mate tells **three different situations** apart, because
@@ -380,12 +495,42 @@ duration, consumption (kWh/100 km), energy recovered** in braking and the estima
   distances, consumption and costs.*
   ⚠️ This is why Mate's own total can sit below the car's odometer: the difference is that line.
 - **Elevation and outside temperature.** The Leapmotor cloud reports neither, so a few minutes after
-  a drive ends Mate looks the trip's GPS track up against [Open-Meteo](https://open-meteo.com) (free,
-  no key, no account). The detail then gains an **altitude line under the SoC & speed chart**, the
-  metres **climbed and descended**, and the temperature **at departure and on arrival** — not an
-  average, so a valley-to-pass climb shows the real drop. Between them they explain a good part of a
-  drive's consumption: a climb costs energy, cold costs range. Trips recorded before this existed
-  have a **Calculate elevation** button, and the whole thing can be switched off in Settings.
+  a drive ends Mate looks the trip's GPS track up against [Open-Meteo](https://open-meteo.com)
+  (free, no key, no account). The detail then gains an **altitude line in the Trip data chart**, the
+  metres **climbed and descended** (the *Ascent / descent* row; its ⓘ says how they are counted),
+  and the **highest and lowest** temperature of the drive — not an average, so a valley-to-pass
+  climb shows the real drop. Between them they explain a good part of a drive's consumption: a climb
+  costs energy, cold costs range. Trips recorded before this existed have a **Calculate elevation**
+  button, and the whole thing can be switched off in Settings.
+- **Driving and stopped 🆕.** Under the duration, the detail splits it into the time driving and the
+  time stopped — at a standstill inside the drive (lights, queues) — from Mate's readings several
+  seconds apart. A stop between joined pieces counts as neither, and a hole in the readings shows as
+  *no data* instead of being given to either.
+- **Median speed 🆕.** Under the average speed, the detail gives the median of the same readings,
+  those while moving: the speed half of them stayed below. A short fast stretch lifts the average of
+  a town drive, while the median keeps its usual pace.
+- **Max speed from the car 🆕.** When the car's cloud record of a drive is matched to the trip (the
+  same record that gives the official consumption), the detail shows the top speed the car itself
+  measured. Mate's own readings are several seconds apart and miss short peaks — on a B10 by up to
+  21 km/h — so a trip without that record keeps the sampled figure, marked with an ⓘ.
+- **Max power and max regen 🆕.** The detail names the highest power the battery gave out and the
+  highest flowing back into it while braking, from the pack's voltage and current Mate reads at
+  every update. The readings are several seconds apart, so a short peak between two of them is
+  missed: the figures are a floor, and the ⓘ beside them says so. Not shown on a range extender,
+  like the regen figure.
+- **Battery temperature 🆕.** The car reports one battery temperature — its coldest cell's, in whole
+  degrees — and the detail gives its readings during the drive as one range, lowest to highest, such
+  as 19 – 22 °C; the ⓘ beside the row says it is the coldest cell. In winter the range shows how cold
+  the pack was and how far the drive warmed it up.
+- **Trip data chart 🆕.** The chart under the map is called *Trip data* and is split into bands that
+  share one time axis, one cursor line and one hover box, its lines grouped by band: **driving**
+  (speed, and the battery power — above zero out of the battery, below zero back into it),
+  **battery** (SoC and the car's range estimate) and **altitude with the battery temperature** (the
+  coldest cell's). A band has at most two scales, one on each side, each with its unit at the top
+  and its numbers in its line's colour. Each entry of the legend switches its line on and off — an
+  empty square marks a line switched off — and a band whose lines are all off folds away. All lines
+  start switched on; the choice is remembered in the browser for every trip. The hover box opens
+  with the time of day, to the second, and the minute of the drive.
 - **Official consumption from the cloud 🆕** — when available, a trip's **consumption, efficiency and
   cost** come from Leapmotor's **official figure** (the real **driving / A·C / other** split) instead of
   the battery‑% estimate alone. Right after a drive you see the estimate marked **⏳ provisional**; once
@@ -846,11 +991,14 @@ divided into three columns.
   salted hash, never in clear text. **If you lose it**, you are not locked out for good: the *New
   password* box doesn't ask for the old one, so from any device still signed in you can simply set
   a new one. If no device is signed in any more, the `MATE_AUTH_PASSWORD` environment variable
-  overrides whatever is stored.
+  overrides whatever is stored. ⚠️ *Overrides*, not replaces: the forgotten hash stays in the
+  database underneath, so once you are back in, set a new password (or clear it) in **Settings →
+  Access** and only then remove the variable — remove it first and the forgotten one is in charge
+  again.
 
 - **Database** — the size of the DB and the **GPS retention**: you can keep the GPS points "forever"
   (default) or delete those older than 6/12/18/24 months to save space. *Only positions are pruned*:
-  trips, charges and charge curves stay.
+  trips — with their route and the readings along it — charges and charge curves stay.
 - **Export / Backup** — download **trips (CSV)**, **charges (CSV)** and a **database backup**. The
   backup arrives **gzip-compressed** (`leapmotor_mate.db.gz`) 🆕, streamed in pieces so even a large
   database never has to fit in memory whole. Restore takes **both** the compressed file and a plain
@@ -1012,8 +1160,19 @@ often the reason is that the car lost **0.1%**, one single step of its charge se
 drop cannot be told apart from noise, and Mate would rather draw nothing than a number it invented.
 
 **I have a Leapmotor REEV (hybrid with a range extender).**
-It's not supported: the energy calculations would use the BEV battery capacity and come out wrong.
-Mate is **only for the 100% electric versions**.
+Supported from **4.7.0**, on the ordinary build: the REEV page, the petrol per trip and per period,
+and the REEV battery packs in the wizard. The BetaTester build is no longer needed for them.
+The petrol figure is the car's own, taken from Leapmotor's per-trip history — the same number the
+official app shows. Where the cloud has no record of a drive, Mate works the litres out from the tank
+instead, and each figure says which of the two is on screen. The cloud's window is about 28 days, so
+on a long history the older drives read the tank's answer, which measures about 20% lower.
+A drive that burned nothing reads `0 L` with *all electric* beside it, which is not the same as a
+drive whose tank could not be read — that one stays blank.
+Not shown on a range extender: the **regen**, because a generator refilling the pack while you drive
+cannot be told apart from braking.
+Already running the BetaTester build? You do not have to move — it keeps working. If you want to, it
+is a backup and a restore, in that order: see
+[From the BetaTester build to the official one](BETA-TO-OFFICIAL.md).
 
 **I'm not in Europe.**
 At the moment Mate only works with the **European** Leapmotor cloud. Accounts on servers in other

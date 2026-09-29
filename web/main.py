@@ -1,4 +1,7 @@
 """LeapMotor Mate — web server."""
+import mate_api  # explicit independent runtime; no sitecustomize hook
+from runtime_paths import prepare_installation
+prepare_installation()
 import json
 import logging
 import os
@@ -29,7 +32,7 @@ import auth
 import security
 import update_check
 
-MATE_VERSION = "3.19.1"  # bump together with the git tag + add-on config.yaml at release
+MATE_VERSION = "4.7.0"  # bump together with the git tag + add-on config.yaml at release
 
 import diagnostics
 import demo
@@ -97,6 +100,7 @@ def _ensure_schema() -> None:
         sys.path.insert(0, _poller)
         try:
             import schema as _schema
+            import charging_places  # shared pure module; no web/poller name collisions
         finally:
             sys.path.remove(_poller)
         conn = _sq.connect(db_reader.DB_PATH, timeout=15)
@@ -255,7 +259,7 @@ templates.env.filters["localdate"] = _localdate
 # Display-time unit conversion (DB stays metric — see units.py). Filters format "<value> <unit>";
 # the *_unit() / *_val() globals give a bare unit label or converted number (chart axes / JS data).
 import units
-for _name in ("dist", "speed", "temp", "pressure", "elev"):
+for _name in ("dist", "speed", "temp", "temp_range", "pressure", "elev"):
     templates.env.filters[_name] = getattr(units, _name)
 templates.env.filters["eff"] = units.efficiency
 def _eff_cls(e) -> str:
@@ -313,7 +317,7 @@ templates.env.globals.update(
     dist_val=units.dist_val, speed_val=units.speed_val, temp_val=units.temp_val,
     eff_val=units.eff_val, elev_val=units.elev_val, unit_system=units.get_unit_system,
     dist100_unit=units.dist100_unit, cost100_val=units.cost100_val,
-    eff_cls=_eff_cls,
+    eff_cls=_eff_cls, display_tz_name=db_reader.display_tz_name,
     # #222 — whether the charger's-own-kWh field can be offered at all. A GLOBAL, not a per-route
     # value: the charge card is rendered by the page AND by two partials that build their context by
     # hand, so a flag passed through _ctx reached the page and silently vanished from the day drawer
@@ -413,6 +417,7 @@ def _driving(pos: dict) -> bool:
     return (pos.get("gear") or "P") != "P" or pos.get("speed_kmh", 0) > 1
 
 def _state_color(pos: dict) -> str:
+    if pos.get("driving_stale"): return "text-amber-400"
     if pos.get("charging"): return "text-yellow-400"
     if _driving(pos): return "text-blue-400"
     if pos.get("plug_connected"): return "text-teal-300"   # cable in, not actively charging
@@ -459,7 +464,9 @@ def _ago(t, seconds) -> str:
         return t("ago_s").format(n=s)
     if s < 3600:
         return t("ago_m").format(n=s // 60)
-    return t("ago_h").format(n=s // 3600)
+    if s < 86400:
+        return t("ago_h").format(n=s // 3600)
+    return t("ago_d").format(n=s // 86400)
 
 
 def _last_position(status, t) -> dict:
@@ -517,6 +524,7 @@ def _ctx(**kwargs):
     lang = db_reader.get_language()
     t = i18n.get_t(lang)
     def state_label(pos: dict) -> str:
+        if pos.get("driving_stale"): return t("state_stale")
         if pos.get("charging"): return t("state_charging")
         if _driving(pos): return t("state_driving")
         # Charge finished (or paused) but the cable is still plugged in — don't read as a plain
@@ -556,7 +564,17 @@ def _ctx(**kwargs):
     # A car that walked in from the poller and never met the wizard is running on its model's
     # default pack. On every page, because the figures it bends are on every page.
     _unconfigured = db_reader.unconfigured_vehicles()
-    return {**kwargs, "lang": lang, "t": t, "version": MATE_VERSION, "demo": _IS_DEMO,
+    _command_css = ""
+    if os.environ.get("MATE_API_V2") == "1" and not _IS_DEMO:
+        from ui_command_access import hidden_controls_css
+        _vin = (_veh or {}).get("vin", "")
+        _command_css = hidden_controls_css(
+            _vin, db_reader.get_setting,
+            # One rule for the page, the injected CSS and Home Assistant: the cloud's data for
+            # this car plus what was measured on the model.
+            shown=lambda _name: capability_profile.command_shown(
+                _vin, _name, car_type=(_veh or {}).get("car_type", "")))
+    return {**kwargs, "api_v2_command_css": _command_css, "lang": lang, "t": t, "version": MATE_VERSION, "demo": _IS_DEMO,
             "unconfigured_cars": ", ".join(
                 (v.get("car_type") or (v.get("vin") or "")[-6:]) for v in _unconfigured),
             "vehicles": _vehicles,
@@ -687,6 +705,7 @@ async def overview(request: Request):
         charge_limit=_configured_charge_limit((vehicle or {}).get("vin") or ""),
         car_resp=db_reader.command_responsiveness(),
         battery_price=db_reader.current_blended_price(),   # #200 — must match /api/status-card
+        data_link=None if _IS_DEMO else db_reader.data_link(status),   # demo runs no poller
     ))
 
 
@@ -1397,14 +1416,15 @@ async def statistics(request: Request):
     totals["reev_spend"] = db_reader.reev_actual_spend() if _reev else None
     # …and what the GENERATOR itself drinks while it runs (@michapr, beta #26). Gated on the DATA,
     # not just on the markup: `wallbox_enabled` taught us that hiding a card while the figure is
-    # still computed is not a gate at all. REEV stays capability-gated AND beta-only.
-    totals["reev_fuel"] = (db_reader.reev_fuel_summary()
-                           if (_reev and research.research_enabled()) else None)
+    # still computed is not a gate at all. Capability only since 4.7.0 — the litres were calibrated
+    # against a drive whose figure the owner can read in the official app (@ebagnoli, 29/09/2026:
+    # 77 km / 0.3 kWh / 4.9 L, and the cloud's own record says the same three), so the BetaTester
+    # build has no job left here. A plain electric car still reaches none of it.
+    totals["reev_fuel"] = db_reader.reev_fuel_summary() if _reev else None
     # …and the one number that answers "plug in here, or just burn petrol?" (@ebagnoli, beta #13).
-    # Same gate as the card above — REEV capability AND the BetaTester build — and gated on the
-    # DATA, not the markup: computing it for a car that must not see it is not a gate.
-    totals["reev_breakeven"] = (db_reader.reev_breakeven_kwh_price()
-                                if (_reev and research.research_enabled()) else None)
+    # Same gate as the card above — the car's capability — and gated on the DATA, not the markup:
+    # computing it for a car that must not see it is not a gate.
+    totals["reev_breakeven"] = db_reader.reev_breakeven_kwh_price() if _reev else None
     # …and what all of it COST: every euro spent over every kilometre driven (@michapr's card, on
     # Silvio's basis — a cost is the whole cost, not the driving's share of it). The litres burned
     # are passed only so a car with no tank never reads the fuel table.
@@ -1421,7 +1441,7 @@ async def statistics(request: Request):
     # trips from the elevation enrichment). The petrol half follows the same REEV+research gate as
     # every other fuel figure — computed for nobody else, not merely hidden.
     efftemp = db_reader.get_efficiency_vs_temp(
-        include_fuel=(_reev and research.research_enabled()))
+        include_fuel=_reev)
     return templates.TemplateResponse(request, "statistics.html", _ctx(
         page="statistics", vehicle=vehicle,
         grouped=grouped, totals=totals, efftemp=efftemp,
@@ -1443,13 +1463,29 @@ async def report(request: Request, month: str | None = None):
 
 @app.get("/battery", response_class=HTMLResponse)
 async def battery_page(request: Request):
+    """The shell. Both figures are long sums (3.526 s together on an add-on) and each section
+    fetches its own — see partials/battery_health.html and partials/battery_vampire.html."""
     vehicle, _ = db_reader.get_vehicle()
-    health = db_reader.get_battery_health()
-    vampire = db_reader.get_vampire_drain(
-        min_drop_pct=float(db_reader.get_setting("vampire_min_drop_pct", "0.2") or 0.2),
-        min_hours=float(db_reader.get_setting("vampire_min_hours", "1") or 1))
     return templates.TemplateResponse(request, "battery.html", _ctx(
-        page="battery", vehicle=vehicle, health=health, vampire=vampire,
+        page="battery", vehicle=vehicle,
+    ))
+
+
+@app.get("/api/battery-health", response_class=HTMLResponse)
+async def battery_health_section(request: Request):
+    """State of health: integrates the power samples of every qualifying charge."""
+    return templates.TemplateResponse(request, "partials/battery_health.html", _ctx(
+        health=db_reader.get_battery_health(),
+    ))
+
+
+@app.get("/api/battery-vampire", response_class=HTMLResponse)
+async def battery_vampire_section(request: Request):
+    """Vampire drain: ninety days of position rows grouped into parks."""
+    return templates.TemplateResponse(request, "partials/battery_vampire.html", _ctx(
+        vampire=db_reader.get_vampire_drain(
+            min_drop_pct=float(db_reader.get_setting("vampire_min_drop_pct", "0.2") or 0.2),
+            min_hours=float(db_reader.get_setting("vampire_min_hours", "1") or 1)),
     ))
 
 
@@ -1475,12 +1511,13 @@ async def reev_page(request: Request):
     behaviour is validated against real REEV data. Live signal fetch (no pipeline storage)."""
     import asyncio
     is_research = research.research_enabled()
-    # REEV is capability-gated (is_reev) AND beta-only (research): a BEV owner must NEVER reach any REEV
-    # surface, on any build, and the official build exposes none of it. Redirect anyone who isn't a REEV
-    # car on a research build — the sole exception is the ?demo layout preview (research-only, no car).
+    # REEV is capability-gated (is_reev): a BEV owner must NEVER reach any REEV surface, on any build.
+    # The BetaTester build is no longer part of THIS gate — the fuel figures were calibrated against
+    # the owner's own app on 29/09/2026 — but it still gates the research TOOLS inside the page and
+    # the ?demo layout preview, which invents signals for a car that has none.
     is_reev_car = db_reader.is_reev_car()
     demo = bool(is_research and request.query_params.get("demo"))
-    if not (is_reev_car and is_research) and not demo:
+    if not is_reev_car and not demo:
         return RedirectResponse(request.headers.get("x-ingress-path", "") + "/")
     vehicle, _ = db_reader.get_vehicle()
     # Research-only preview: /reev?demo=1 renders the dashboard with sample REEV values (from a real
@@ -1693,6 +1730,19 @@ def _build_research_export():
         w.writeheader()
         w.writerows(fuels)
         z.writestr("fuel_purchases.csv", s.getvalue())
+        # The cloud's OWN per-trip records, as the history worker staged them. Since 4.5.3 every
+        # install stages these, range-extender accounts included, and each row carries
+        # `driveReevOil` — the fuel that drive burned according to the car's cloud. The bundle
+        # carried the AGGREGATE probes (getEC, the weekly rank, mileage/energy/detail) and never
+        # these, so the field sat in the tester's database and could not be read: whether a REEV
+        # populates it, and in litres or millilitres, is still unmeasured. Columns and order come
+        # from db_reader.RESEARCH_CLOUD_TRIP_FIELDS — one list, so a column cannot drift out.
+        cloud_trips = db_reader.research_cloud_trip_records()
+        s = io.StringIO()
+        w = csv.DictWriter(s, fieldnames=db_reader.RESEARCH_CLOUD_TRIP_FIELDS, extrasaction="ignore")
+        w.writeheader()
+        w.writerows(cloud_trips)
+        z.writestr("cloud_trip_records.csv", s.getvalue())
         # What each PAGE made of those same trips — beta #35/#36. Three pages print three kWh/100km
         # for one month (Statistics AVERAGES the per-trip ratios; Trips divides getEC by its own km;
         # the Report divides getEC by ALL km), and the cost card can drop the fuel. The raw trips are
@@ -1832,9 +1882,11 @@ async def research_consent_accept(request: Request):
 
 
 def _fuel_blocked() -> bool:
-    """REEV+research gate, mirroring reev_page: a BEV / non-research visitor must never reach fuel data,
-    on any build. Applied to the page AND the write endpoints."""
-    return not (db_reader.is_reev_car() and research.research_enabled())
+    """Capability gate, mirroring reev_page: a car with no tank must never reach fuel data, on any
+    build. Applied to the page AND the nine write endpoints — a gate on the page alone would leave
+    the POSTs open. The BetaTester build was the second half of this test until 4.7.0; it came off
+    when the litres were calibrated against a drive the owner can read in the official app."""
+    return not db_reader.is_reev_car()
 
 
 def _fuel_local_to_utc(ts_str: str) -> str:
@@ -2163,11 +2215,10 @@ _COMFORT_ROWS = (
     ("steering_heat",        "steering_heat", "comfort_steering_heat",        "steering",  "heat"),  # last → mirrors stay paired on mobile
 )
 
-# Comfort rows controllable as a simple on/off toggle (steering/mirror — no level on the car).
+# Comfort rows controllable as a simple on/off toggle (mirrors — no level on the car).
 # skey -> (gating command feature, on-command key, off-command key). Both mirror tiles share the
-# single mirror command. Seats are handled separately (level slider).
+# single mirror command. Seats and the steering wheel are handled separately (level sliders).
 _COMFORT_TOGGLE = {
-    "steering_heat":     ("steering_heat_cmd", "steering_heat_on", "steering_heat_off"),
     "mirror_heat_left":  ("mirror_heat_cmd",   "mirror_heat_on",   "mirror_heat_off"),
     "mirror_heat_right": ("mirror_heat_cmd",   "mirror_heat_on",   "mirror_heat_off"),
 }
@@ -2198,6 +2249,11 @@ def _comfort_rows(vin, car_type=""):
             if capability_profile.is_shown(vin, f"seat_{func}_cmd", car_type=car_type):
                 row.update(control="slider", func=func,
                            position=("driver" if side == "driver" else "copilot"))
+        elif skey == "steering_heat":
+            # 1816 on a B10 from software 3.41.30: 0 off, 1 level I, 2 level II, 3 level II switched on remotely.
+            row.update(value=min(v, 2), remote=(v == 3))
+            if capability_profile.is_shown(vin, "steering_heat_cmd", car_type=car_type):
+                row.update(control="steering", cmd_on="steering_heat_on", cmd_off="steering_heat_off")
         elif skey in _COMFORT_TOGGLE:
             cfeat, cmd_on, cmd_off = _COMFORT_TOGGLE[skey]
             if capability_profile.is_shown(vin, cfeat, car_type=car_type):
@@ -2211,7 +2267,7 @@ def _comfort_rows(vin, car_type=""):
 # making them appear to "revert". After a web comfort command we merge the expected sensor values
 # so the refresh shows the action immediately; the next poll overwrites with the real values.
 _COMFORT_CMD_OPTIMISTIC = {
-    "steering_heat_on":  {"steering_heat": 2},
+    "steering_heat_on":  {"steering_heat": 3},   # what 1816 reads after a remote "on" (see _comfort_rows)
     "steering_heat_off": {"steering_heat": 0},
     "mirror_heat_on":    {"mirror_heat_left": 1, "mirror_heat_right": 1},
     "mirror_heat_off":   {"mirror_heat_left": 0, "mirror_heat_right": 0},
@@ -2265,7 +2321,8 @@ async def commands(request: Request):
     status = db_reader.get_latest_status()
     comfort = _comfort_rows(vehicle.get("vin") if vehicle else None, (vehicle or {}).get("car_type", ""))
     return templates.TemplateResponse(request, "commands.html", _ctx(
-        page="commands", vehicle=vehicle, status=status, comfort=comfort, **_wins_ctx(),
+        page="commands", vehicle=vehicle, vin=vehicle.get("vin") if vehicle else None,
+        status=status, comfort=comfort, **_wins_ctx(),
         ac_off_shown=capability_profile.command_shown(vehicle.get("vin") if vehicle else None, "climate_off"),
         is_t03=(vehicle.get("car_type") or "").upper() == "T03" if vehicle else False,
     ))
@@ -2305,12 +2362,13 @@ def _parse_vehicle_status(sig: dict, vin: str | None = None, cmd_pct: int | None
         # Wheel→signal mapping corrected from a TWO-B10 vs official-app cross-check (GitHub #32:
         # the UK reporter's car + Silvio's IT car, both showing 280 kPa at the rear-right):
         # pressures map ascending 2646=FL/2653=FR/2660=RL/2667=RR (the leapmotor-api doc order was
-        # wrong); each pressure's paired state signal moves with it (FL=2655/FR=2648/RL=2662/RR=2641).
+        # wrong). The alarm flags do NOT move with them: leapmotor-api, leapmotor-ha and ioBroker all
+        # pair them as 2641=FL/2648=FR/2655=RL/2662=RR; that check did not cover them (no alarm was on).
         "tyres": {
-            "fl": {"bar": bar("2646"), "low": i("2655") == 1},
+            "fl": {"bar": bar("2646"), "low": i("2641") == 1},
             "fr": {"bar": bar("2653"), "low": i("2648") == 1},
-            "rl": {"bar": bar("2660"), "low": i("2662") == 1},
-            "rr": {"bar": bar("2667"), "low": i("2641") == 1},
+            "rl": {"bar": bar("2660"), "low": i("2655") == 1},
+            "rr": {"bar": bar("2667"), "low": i("2662") == 1},
         },
         "doors": {
             "driver":     is_open("1277"), "passenger": is_open("1278"),
@@ -2525,6 +2583,10 @@ async def settings_page(request: Request):
                 "default_drive_mode": db_reader.get_setting("default_drive_mode", ""),
                 "default_one_pedal": db_reader.get_setting("default_one_pedal", ""),
                 "db_size_mb": round(db_reader.get_db_size_bytes() / 1048576, 1)}
+    if os.environ.get("MATE_API_V2") == "1":
+        from cloud_import_policy import trips_enabled
+        settings["cloud_import_available"] = True
+        settings["cloud_import_trips"] = trips_enabled(db_reader._get())
     # Per-card open/collapsed state for the settings accordion — saved in the DB (shared
     # across devices). Cards start collapsed so the page stays compact, EXCEPT 'vehicle': it's
     # tiny (model + VIN + the Logout/change-account button) and keeping it open makes the logout
@@ -2553,7 +2615,6 @@ async def settings_page(request: Request):
         timezones=db_reader.timezone_options(),
         timezone_code=db_reader.get_timezone(),
         diag=diagnostics.build_system_info(MATE_VERSION),
-        measured_capacity=db_reader.get_battery_health().get("latest_capacity_kwh"),
         # The capacity actually in use, and the SoH reference. The form used to carry its own
         # default (67.1) while the code read another (65.0) — two defaults for one value, and
         # whichever got written first decided the reference for ever (@danielvilhena, #221).
@@ -2605,11 +2666,43 @@ async def costs_page(request: Request):
     cfg = db_reader.get_cost_config()
     return templates.TemplateResponse(request, "costs.html", _ctx(
         page="costs", vehicle=vehicle,
+        **db_reader.charging_places_context(),
         settings={**settings, **prices},
         charge_types=db_reader.charge_types_localised(),
         cost_mode=cfg["mode"], cost_modes=cfg["modes"], tou_method=cfg["method"],
         tou_bands_json=json.dumps(cfg["bands"]), cost_modes_json=json.dumps(cfg["modes"]),
     ))
+
+
+@app.post("/api/settings/charging-places", response_class=HTMLResponse)
+async def save_charging_place(request: Request):
+    form = await request.form()
+    try:
+        db_reader.save_charging_place(form)
+    except ValueError as exc:
+        return HTMLResponse(i18n.get_t(db_reader.get_language())(str(exc)), status_code=400)
+    return RedirectResponse(request.headers.get("x-ingress-path", "") + "/costs#charging-places", status_code=303)
+
+
+@app.get("/api/charges/{charge_id}/place", response_class=HTMLResponse)
+async def charge_place_picker(request: Request, charge_id: int):
+    row = db_reader._get().execute("SELECT * FROM charges WHERE id=? AND vehicle_id=?",
+                                  (charge_id, db_reader._current_vehicle_id())).fetchone()
+    if not row:
+        return HTMLResponse("", status_code=404)
+    return templates.TemplateResponse(request, "partials/charge_place_picker.html", _ctx(
+        charge=dict(row), **db_reader.charging_places_context()))
+
+
+@app.post("/api/charges/{charge_id}/place", response_class=HTMLResponse)
+async def set_charge_place(request: Request, charge_id: int):
+    form = await request.form()
+    try:
+        db_reader.assign_charging_place(charge_id, int(form.get("place_id") or 0))
+    except ValueError as exc:
+        key = str(exc) if str(exc).startswith('place_') else 'place_invalid'
+        return HTMLResponse(i18n.get_t(db_reader.get_language())(key), status_code=400)
+    return Response(status_code=204, headers={"HX-Refresh": "true"})
 
 
 @app.get("/wallbox", response_class=HTMLResponse)
@@ -3335,16 +3428,34 @@ async def set_manual_charge_location(request: Request, charge_id: int):
     set_charge_location_name exactly like a picked candidate would — location_name
     IS NOT NULL either way, so the background sweep (_LOCATION_CANDIDATES_WHERE) never
     revisits this charge. An empty submission changes nothing (closes the input with
-    whatever was already saved, same as clicking away)."""
+    whatever was already saved, same as clicking away).
+    #301: an Open Charge Map identifier in the field — a pasted OCM link, "OCM-280221", or
+    the bare number — is not a name: that exact POI is fetched by id and saved with its own
+    name and link, same as a pick from 🔄. Nothing is searched, so nothing can be guessed
+    wrong. Its coordinates are NOT written: a charge without them is how a hand-typed one is
+    recognised, and the station's position is not where the car was. When the fetch fails
+    nothing is written either — the id is not a label, and saving it as one would bury it."""
+    import asyncio
     form = await request.form()
     name = (form.get("name") or "").strip()[:200]
     charge = db_reader.get_charge_location(charge_id)
     if not charge:
         return HTMLResponse("", status_code=404)
+    t = i18n.get_t(db_reader.get_language())
+    poi_id = charger_locator.parse_ocm_id(name)
+    if poi_id:
+        st, reason = await asyncio.get_event_loop().run_in_executor(
+            None, charger_locator.ocm_station_by_id, poi_id)
+        if reason:
+            return templates.TemplateResponse(request, "partials/charge_location.html",
+                                              {"charge": charge, "t": t, "ocm_error": reason})
+        db_reader.set_charge_location_name(charge_id, st["name"][:200], st["url"])
+        charge["location_name"], charge["location_url"] = st["name"][:200], st["url"]
+        return templates.TemplateResponse(request, "partials/charge_location.html",
+                                          {"charge": charge, "t": t})
     if name:
         db_reader.set_charge_location_name(charge_id, name, None)
         charge["location_name"], charge["location_url"] = name, None
-    t = i18n.get_t(db_reader.get_language())
     return templates.TemplateResponse(request, "partials/charge_location.html",
                                       {"charge": charge, "t": t})
 
@@ -3646,6 +3757,17 @@ async def save_cost_dynamic(request: Request):
         db_reader.save_dynamic_price_entity(form.get("dynamic_price_entity", ""))
     t = i18n.get_t(db_reader.get_language())
     return HTMLResponse(f'<span style="color:#22c55e;font-size:13px">{t("costs_saved")}</span>')
+
+
+@app.post("/api/settings/cloud-import", response_class=HTMLResponse)
+async def save_cloud_import(request: Request):
+    if os.environ.get("MATE_API_V2") != "1":
+        return HTMLResponse("unavailable", status_code=404)
+    from cloud_import_policy import KEY
+    form = await request.form()
+    db_reader.set_setting(KEY, "1" if form.get("cloud_import_trips") == "1" else "0")
+    t = i18n.get_t(db_reader.get_language())
+    return HTMLResponse(f'<span style="color:#22c55e">{t("cloud_import_saved")}</span>')
 
 
 @app.post("/api/settings/abrp", response_class=HTMLResponse)
@@ -4002,7 +4124,7 @@ async def test_mqtt(request: Request):
 
 # Every collapsible card on the Settings accordion. Used both to build the initial
 # open/collapsed map and as the allowlist for the ui-state save endpoint.
-_UI_CARD_KEYS = {"locale", "vehicle", "battery", "polling", "charge_detect", "trips", "advanced",
+_UI_CARD_KEYS = {"cloud_import", "locale", "vehicle", "battery", "polling", "charge_detect", "trips", "advanced",
                  "abrp", "geocoder", "charger_locator", "wallbox", "mqtt",
                  "database", "export", "diagnostics"}
 
@@ -4376,6 +4498,35 @@ async def status_card(request: Request):
     ))
 
 
+@app.get("/api/measured-capacity", response_class=HTMLResponse)
+async def measured_capacity(request: Request):
+    """The pack's measured capacity hint, fetched by the Settings page instead of built into it:
+    the estimate integrates every qualifying charge and was 927 ms of a 1.36 s page."""
+    return templates.TemplateResponse(request, "partials/measured_capacity.html", _ctx(
+        measured_capacity=db_reader.get_battery_health().get("latest_capacity_kwh"),
+    ))
+
+
+@app.get("/api/polling-card", response_class=HTMLResponse)
+async def polling_card(request: Request):
+    """The Cloud link card's body, fetched when the card is opened. It was built inside
+    settings_page for every load of the page, open or not, and that cost was the whole of the
+    slowness reported hours after 4.5.0 went out."""
+    return templates.TemplateResponse(request, "partials/polling_card.html", _ctx(
+        polling=db_reader.polling_summary(),
+    ))
+
+
+@app.get("/api/link-pill", response_class=HTMLResponse)
+async def link_pill(request: Request):
+    """The data-link tile beside the Overview heading, on its own 30-second refresh."""
+    if _IS_DEMO:
+        return HTMLResponse("")            # demo runs no poller: a silent heartbeat is not an outage
+    return templates.TemplateResponse(request, "partials/link_pill.html", _ctx(
+        data_link=db_reader.data_link(db_reader.get_latest_status()),
+    ))
+
+
 @app.get("/api/last-position", response_class=JSONResponse)
 async def last_position():
     """The Overview map's marker, polled by the map itself. It was drawn once, at page load, and
@@ -4634,7 +4785,7 @@ async def cmd_grid(request: Request):
     vin = vehicle.get("vin") if vehicle else None
     comfort = _comfort_rows(vin, (vehicle or {}).get("car_type", ""))
     return templates.TemplateResponse(request, "partials/cmd_grid.html", _ctx(
-        status=status, comfort=comfort, **_wins_ctx(),
+        vin=vin, status=status, comfort=comfort, **_wins_ctx(),
         ac_off_shown=capability_profile.command_shown(vin, "climate_off"),
         is_t03=(vehicle.get("car_type") or "").upper() == "T03" if vehicle else False,
     ))
@@ -4846,11 +4997,9 @@ async def boost(seconds: int = _BOOST_DEFAULT_S):
     """Trigger fast (10s) polling for a window, so the poller catches a trip start that
     would otherwise be missed during deep sleep. Meant to be called when you get in the
     car (e.g. an iPhone Bluetooth shortcut, relayed by HA on the LAN — Mate stays local).
-    Coordinated with the poller via settings['boost_until']."""
-    import time
+    It can't tell which car you got into, so every car is sped up (db_reader.boost_every_car)."""
     seconds = max(30, min(int(seconds or _BOOST_DEFAULT_S), 1800))
-    until = time.time() + seconds
-    db_reader.set_setting("boost_until", str(until))
+    db_reader.boost_every_car(seconds)
     return {"status": "boost on", "seconds": seconds}
 
 
@@ -5785,14 +5934,15 @@ async def run_command(name: str, request: Request, background_tasks: BackgroundT
                              payload={"ok": False, "error": "unknown_command"})
 
     # Ability gate (defence in depth, mirrors the hidden button): refuse a command the car doesn't
-    # declare it can do — e.g. unlock-charge-cable on a T03, which never declares code 53 (#142) —
+    # declare it can do — e.g. unlock-charge-cable on a T03, which never declares code 48 (#142) —
     # instead of bouncing a no-op off the car. Only the ability-gated commands (COMMAND_ABILITY keys)
     # look up the vehicle, so every other command's path is untouched. None abilities → allowed.
-    if name in capability_profile.COMMAND_ABILITY:
+    if os.environ.get("MATE_API_V2") == "1" or name in capability_profile.COMMAND_ABILITY:
         _veh, _ = db_reader.get_vehicle()
         if not capability_profile.command_shown(
                 (_veh or {}).get("vin", ""), name,
-                abilities=capability_profile.parse_abilities((_veh or {}).get("abilities"))):
+                abilities=capability_profile.parse_abilities((_veh or {}).get("abilities")),
+                car_type=(_veh or {}).get("car_type", "")):
             _msg = {"it": "Non supportato su questo modello", "fr": "Non pris en charge sur ce modèle",
                     "de": "Von diesem Modell nicht unterstützt"}.get(
                         db_reader.get_language(), "Not supported on this model")
@@ -5832,7 +5982,7 @@ async def run_command(name: str, request: Request, background_tasks: BackgroundT
     _last_command_at = time.time()
     # Boost the poller so the car's REAL state is re-polled within a few seconds (not up to 30s).
     # We no longer fake an optimistic state, so the UI must catch up to reality quickly.
-    db_reader.set_setting("boost_until", str(time.time() + 60))
+    db_reader.boost_selected_car(60)
     global _command_epoch
     _command_epoch += 1
     epoch = _command_epoch
@@ -5874,7 +6024,7 @@ async def run_command(name: str, request: Request, background_tasks: BackgroundT
             _veh, _ = db_reader.get_vehicle()
             _optimistic_comfort(_veh.get("vin") if _veh else None, _COMFORT_CMD_OPTIMISTIC[name])
         return _cmd_response(request, payload={"ok": True, "status": "done"},
-                             html='<span style="color:#22c55e">✓ Done</span>')
+                             html='<span data-ok="1" style="color:#22c55e">✓ Done</span>')
 
     import asyncio
     ok, msg = await asyncio.get_event_loop().run_in_executor(None, fn)
@@ -5887,12 +6037,29 @@ async def run_command(name: str, request: Request, background_tasks: BackgroundT
         # Climate commands take several seconds to reflect in signals → show the
         # spinner and refresh from real signals after a delay (like slow commands).
         slow = name in _SLOW_COMMANDS or field is not None
-        background_tasks.add_task(_post_command_refresh, expected, epoch, 12 if slow else 3)
+        refresh_delay = 2 if os.environ.get("MATE_API_V2") == "1" else (12 if slow else 3)
+        background_tasks.add_task(_post_command_refresh, expected, epoch, refresh_delay)
+        if os.environ.get("MATE_API_V2") == "1" and "cloud accepted" in msg.lower():
+            from html import escape
+            message = i18n.get_t(db_reader.get_language())("command_accepted_unconfirmed")
+            return _cmd_response(request,
+                payload={"ok": True, "status": "accepted_unconfirmed", "message": message},
+                html='<span data-warn="1" data-accepted="1" style="color:#fbbf24">' + escape(message) + '</span>')
         if slow:
             return _cmd_response(request, payload={"ok": True, "status": "pending"},
                 html='<span data-slow="1" style="color:#60a5fa;display:inline-flex;align-items:center;gap:4px"><svg style="animation:spin 1s linear infinite;width:14px;height:14px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg></span><style>@keyframes spin{to{transform:rotate(360deg)}}</style>')
         return _cmd_response(request, payload={"ok": True, "status": "done"},
-                             html='<span style="color:#22c55e">✓ Done</span>')
+                             html='<span data-ok="1" style="color:#22c55e">✓ Done</span>')
+    if os.environ.get("MATE_API_V2") == "1":
+        # The cloud is the authority on what a model has. A refusal with code 40 means this car
+        # has not got this command, so stop offering it — the button would fail every time.
+        refusal = command_client.last_cloud_refusal()
+        if refusal:
+            import ui_command_access
+            refused_vin, code = refusal
+            ui_command_access.remember_refusal(
+                refused_vin, ui_command_access.account_username(db_reader.get_setting),
+                name, code, get_setting=db_reader.get_setting, set_setting=db_reader.set_setting)
     return _cmd_response(request, payload={"ok": False, "error": msg},
                          html=_cmd_error_html(msg))
 
@@ -5905,20 +6072,20 @@ _EU_BATTERY_MAP = battery_packs.EU_BATTERY_MAP
 
 
 def battery_options_for_build() -> dict[str, list[dict]]:
-    """The wizard's battery list, as the build that is serving it is allowed to show it.
+    """The wizard's battery list — every pack, range-extenders included, since 4.7.0.
 
-    REEV packs belong to MateBetaTesterOnly ONLY. The official Mate has no REEV support — its energy
-    pipeline assumes SoC-down = energy-used, which a generator refilling the pack mid-drive breaks —
-    so offering the pack would promise a support that isn't there, and whoever picked it would end up
-    with statistics that quietly don't add up. Both builds ship from this one image, so the split is
-    made here, at runtime, and NOT by removing the packs (that would blind the beta too).
+    ⛔ This used to hide the REEV packs on the official build, because the official Mate had no REEV
+    support: its energy pipeline assumes SoC-down = energy-used, which a generator refilling the pack
+    mid-drive breaks. It has that support now, so hiding the pack no longer protects anybody — it
+    stops a range-extender owner from finishing the wizard at all, which is a worse silence than the
+    one the filter was written to prevent.
 
-    Single source of truth on purpose: the wizard page and the detect-vehicle endpoint both render
-    from this. They used to keep separate copies, which is exactly how the REEV packs stayed in the
-    official wizard for ten days after the gate that was supposed to remove them (#141)."""
-    if research.research_enabled():
-        return _EU_BATTERY_MAP
-    return {ct: [o for o in opts if not o.get("reev")] for ct, opts in _EU_BATTERY_MAP.items()}
+    🔑 Why this function still exists rather than reading the map directly: the wizard page and the
+    detect-vehicle endpoint both render from it. They used to keep separate copies, which is exactly
+    how the REEV packs stayed in the official wizard for ten days after the gate that was supposed to
+    remove them (#141) — and a single source of truth is worth keeping whichever way the answer goes.
+    """
+    return _EU_BATTERY_MAP
 
 
 # ── Setup wizard ─────────────────────────────────────────────────────────────
@@ -5978,9 +6145,30 @@ async def demo_status():
 _DATA_CERT_DIR = os.environ.get("DATA_CERT_DIR", "/data/certs")
 
 
+@app.post("/api/setup/application-bundle")
+async def setup_application_bundle(request: Request):
+    from application_bundle import install_bundle, MAX_BYTES
+    form = await request.form()
+    upload = form.get("bundle")
+    if upload is None or not hasattr(upload, "read"):
+        return JSONResponse({"error": "Application bundle required"}, status_code=400)
+    payload = await upload.read(MAX_BYTES + 1)
+    try:
+        from runtime_paths import paths
+        result = await run_in_threadpool(install_bundle, payload, paths().data)
+    except Exception:
+        return JSONResponse({"error": "Invalid application bundle; existing material preserved"}, status_code=400)
+    command_client._session._reset()
+    return JSONResponse({"ok": True, "state": result["state"]})
+
+
 @app.get("/api/setup/cert-status")
 async def cert_status_api():
     """Whether the app certificate is already available (wizard can skip the cert step)."""
+    if os.environ.get("MATE_API_V2") == "1":
+        from setup_readiness import readiness
+        from runtime_paths import paths
+        return JSONResponse(readiness(command_client.cert_dir(), parameters_directory=paths().data / 'api-v2-private'))
     return JSONResponse({"present": command_client.certs_present()})
 
 
@@ -6020,6 +6208,10 @@ async def setup_cert_api(request: Request):
     key_path = os.path.join(_DATA_CERT_DIR, "app.key")
     pending = (crt_path + ".new", key_path + ".new")
     try:
+        if os.environ.get("MATE_API_V2") == "1":
+            from migration_state import backup_before_migration
+            from runtime_paths import paths
+            await run_in_threadpool(backup_before_migration, paths().db)
         os.makedirs(_DATA_CERT_DIR, exist_ok=True)
         for path, pem in zip(pending, (crt, key)):
             with open(path, "w") as fh:
@@ -6036,6 +6228,14 @@ async def setup_cert_api(request: Request):
                 os.remove(path)
     if problem:
         return JSONResponse({"error": _CERT_REFUSALS[problem], "code": problem}, status_code=400)
+
+    if os.environ.get("MATE_API_V2") == "1":
+        from automatic_material import provision_automatic
+        from runtime_paths import paths
+        try:
+            await run_in_threadpool(provision_automatic, paths().data, certificate_directory=_DATA_CERT_DIR)
+        except Exception:
+            return JSONResponse({"error": "Application material could not be prepared"}, status_code=400)
 
     # Drop any half-built session so the next call picks up the new cert
     command_client._session._reset()
@@ -6180,7 +6380,12 @@ def _web_listen_host() -> str:
     return "127.0.0.1" if os.environ.get("MATE_DESKTOP") == "1" else "0.0.0.0"
 
 
+# The Supervisor proxies Ingress over a pooled aiohttp client that reuses an idle connection for 15 s;
+# uvicorn's default drops one after 5 s, and a request landing on that mark met a closing socket: 502,
+# command lost. The server has to outlive the client's pool.
+_KEEP_ALIVE_S = 30
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("WEB_PORT", 4000))
-    uvicorn.run("main:app", host=_web_listen_host(), port=port, reload=False)
+    uvicorn.run("main:app", host=_web_listen_host(), port=port, reload=False, timeout_keep_alive=_KEEP_ALIVE_S)

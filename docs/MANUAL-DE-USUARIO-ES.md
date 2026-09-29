@@ -1,6 +1,123 @@
 # LeapMotor Mate — Manual de usuario
 
-> **Versión de Mate:** v3.19.1 · **Idioma:** Español
+> **Versión de Mate:** v4.7.0 · **Idioma:** Español
+
+## Novedades de la versión 4.7.0
+
+**Si conduces un Leapmotor con extensor de autonomía, ahora Mate también es para ti.** Esos modelos
+solo se podían leer con la compilación BetaTester; sus páginas — la página REEV, la gasolina por viaje
+y por periodo y los **paquetes de batería REEV del asistente de configuración** — están ahora en el
+complemento normal y en la imagen Docker normal.
+
+**La cifra de gasolina es la del propio coche.** El historial de Leapmotor guarda, para cada viaje,
+cuánta gasolina dice el coche haber quemado: es el número que ves en la app oficial. Mate la calculaba
+por su cuenta, a partir del nivel del depósito en los dos extremos del viaje, y en el único viaje en
+el que se pudieron comparar los tres salía un **20,7 % menos**: 3,886 L frente a 4,9. Ahora gana la
+cifra del coche; el depósito queda como respaldo para un viaje del que Leapmotor no tiene registro, y
+cada cifra dice cuál de las dos estás mirando. ⚠️ **Algunos viajes antiguos se leerán distinto tras la
+actualización**: la ventana de Leapmotor es de unos 28 días, así que los viajes más antiguos conservan
+la respuesta del depósito, alrededor de una quinta parte más baja.
+
+**Un viaje que no ha quemado nada ahora lo dice.** Un extensor de autonomía circula casi siempre en
+eléctrico, y esos viajes no mostraban nada — igual que un viaje cuyo depósito Mate no pudo leer.
+Cuando el contador del coche lee el mismo valor en los dos extremos, eso es una medida, y ahora se lee
+`0 L` con *todo eléctrico* al lado. El blanco vuelve a significar una sola cosa: no lo sabemos.
+
+**La regeneración vuelve a ser frenada.** En un extensor de autonomía el generador recarga la batería
+mientras conduces, y Mate lo contaba como energía recuperada al frenar — en el único viaje medible era
+el 89 %. Ya no lo cuenta. La cifra sigue oculta en un extensor de autonomía, como antes, pero lo que
+se guarda ahora es honesto.
+
+**Un reinicio ya no estropea un viaje.** Cuando Mate se reinicia en mitad de un viaje, ese viaje se
+cierra después con lo ya registrado. Antes perdía el cuentakilómetros de llegada, el nivel de depósito
+de llegada y toda la regeneración, que marcaba 0,00 kWh — **esto último también en coches totalmente
+eléctricos**. Los tres se reconstruyen ahora a partir de las lecturas del propio viaje.
+
+Además: si tu base de datos rechaza las escrituras — algunos recursos compartidos de red lo hacen — la
+limpieza diaria ya no lo reintenta en cada consulta; en la instalación que lo notificó fueron 266
+intentos en cuatro horas.
+
+### Novedades de la versión 4.6.0
+
+En cada consulta mientras conduces, Mate lee la potencia que sale de la batería, la temperatura de su
+celda más fría, la estimación de autonomía y el aire exterior. Lo guardaba todo y casi nada te lo
+mostraba. Esas cuatro lecturas quedan ahora **con el viaje mismo** y están en su página: **Potencia
+máx.** y **Regen. máx.**, la temperatura de la batería y la exterior como intervalo, de la más baja a
+la más alta del viaje en lugar de como media, y — bajo la duración — cuánto de ella pasaste **en
+movimiento, parado y sin datos**, en minutos enteros que suman la duración de arriba. Junto a la
+velocidad media está ahora la **mediana** de las mismas lecturas, que en un viaje mitad autopista
+mitad atasco dice más que la media.
+
+El gráfico bajo el mapa se llama ahora **Datos del viaje**: un gráfico en tres bandas sobre un solo
+eje de tiempo — velocidad y potencia, SoC y autonomía, altitud y temperatura de la batería — con un
+solo recuadro al pasar el ratón para todas. Su leyenda enciende y apaga cada línea, y tu elección
+queda guardada en este navegador.
+
+La **velocidad máxima** está corregida: donde el registro que Leapmotor guarda de ese viaje está
+emparejado con él, la cifra es la del coche, no la muestra más rápida de Mate. Las lecturas de Mate
+están separadas unos once segundos, así que un pico más corto nunca estuvo en ellas — en 38 viajes la
+muestra quedó por debajo de la cifra del coche en 37.
+
+⚠️ **Los viajes que condujiste antes de esta versión reciben esas lecturas una sola vez, al arrancar
+Mate**, y solo desde las consultas cuya fila de posición sigue en la base de datos. Si has fijado una
+conservación del GPS, en los viajes más antiguos verás un guion: a 7 días se puede rellenar cerca del
+3 % de sus puntos, a 30 días un quinto, a 90 días siete décimos. Con el valor por defecto — guardar
+todo — todos. Cada viaje de ahora en adelante tiene las lecturas sea cual sea ese ajuste.
+
+### Novedades de la versión 4.5.5
+
+Esta versión quita dos cosas y no añade ninguna, y las dos eran sobre actualizaciones de software
+del coche. La fila «Actualizaciones OTA» de la vista general decía **Ninguna** siempre que en la
+bandeja de entrada de tu cuenta no hubiera un aviso — y de tu coche nunca supo nada: Leapmotor
+dice las versiones solo a la cuenta que lo posee, y Mate debe funcionar en una cuenta con la que
+el coche está compartido, que no recibe ningún aviso del vehículo. Así que decía «Ninguna» para
+siempre, y bajo esa etiqueta «Ninguna» se lee como «estás actualizado». ⚠️ Con ella se va la
+entidad **OTA Update Notice** en Home Assistant — en tres diagnósticos encontró cero avisos en 44
+lecturas correctas — así que si construiste una automatización sobre ella, se quedará sin
+entidad. No cambia nada más, y en tus datos no se escribe nada.
+
+### Novedades de la versión 4.5.4
+
+De lo que ves en esta versión no cambia nada: es para nosotros. Desde la 4.5.3 Mate guarda el
+historial de viajes que mantiene la propia nube de Leapmotor — los mismos datos que la aplicación
+oficial muestra en su panel por viaje — y cada registro dice cuánta gasolina consumió ese viaje. En
+un coche con extensor de autonomía es un segundo dato, independiente, junto al que Mate ya lee del
+contador del depósito del coche, y estaba en la base de datos sin forma de extraerlo. Ahora viaja en
+el paquete de diagnóstico, y el texto de diagnóstico dice si ese historial llegó y si el campo de
+combustible está lleno o plano a cero. En un coche solo eléctrico es cero en cada viaje, que es la
+respuesta correcta y no un silencio. En tus datos no se escribe nada y a la nube no se le pide nada
+nuevo.
+
+### Novedades de la versión 4.5.3
+
+Mate es aún más rápido, y esta vez el motivo no son las preguntas sino el hecho de hacerlas. Cada
+lectura abría una conexión nueva a la base de datos, y en una lectura pequeña eso era casi todo el
+coste; ahora hay una por hilo. Y la estimación de salud de la batería leía cada fotograma de cada
+carga solo para descubrir que nadie había estado sentado en el coche con la calefacción encendida —
+ahora es una comprobación indexada. Medido en un add-on real con noventa días de historial: Resumen
+0,213 s → 0,048, Batería 0,129 → 0,012, Cargas 0,278 → 0,035, Estadísticas 0,489 → 0,163, la salud de
+la batería 1,150 → 0,114. De lo que ves no ha cambiado nada.
+
+### Novedades de la versión 4.5.2
+
+Mate es más rápido, en todas las páginas. Las páginas más lentas preguntaban a la base de datos lo mismo una y otra vez — en qué zona horaria mostrar una hora, una vez por fila; qué coche estás mirando, ochenta y siete veces para dibujar una sola tarjeta; si el coche se ha usado como toma de corriente, leyendo una semana de datos — y cada una de esas preguntas abría su propia conexión a la base de datos. Ahora se preguntan una sola vez. La página de batería ya no espera sus dos cálculos largos: aparece, y la salud y el consumo en reposo se rellenan después. Medido en un add-on real con noventa días de historial: batería 3,526 s → 0,121 s, estadísticas 2,679 → 0,448, viajes 1,696 → 0,406, ajustes 1,613 → 0,413. De lo que ves no ha cambiado nada.
+
+### Novedades de la versión 4.5.1
+
+Mate carga más rápido. Decidir qué botones puede mostrar tu coche leía la base de datos 156 veces por página — una por comando, tres ajustes cada una, y cada una abría su propia conexión. Ahora se leen una sola vez. En un add-on que funciona desde una tarjeta SD, eso era la mayor parte de la espera. La tarjeta «Enlace con la nube» de los ajustes ya no se construye en cada carga de la página: busca sus cifras cuando la abres tú. Y el menú mantiene su sitio — elegir una entrada de abajo lo devolvía arriba, y la entrada recién usada quedaba otra vez fuera de pantalla.
+
+### Novedades de la versión 4.5.0
+
+La página de inicio dice ahora si sus datos son de fiar. Junto al título hay un pequeño panel: **Mate → nube → coche**, dos puntos, y al pasar el ratón (o tocar) sobre cada palabra aparecen los hechos que hay detrás — cuánto tiempo lleva funcionando el lector, si la nube lo deja entrar y cuándo respondió por última vez, cuándo envió el coche su último dato y qué estaba haciendo. Mientras todo va bien, no escribe nada más. Cuando es Mate quien no consigue leer, el panel se pone rojo y dice qué implica: cuándo llegó el último dato, cuándo lo intentará de nuevo, el error que dio la nube y — solo si la nube culpó a la contraseña — que la contraseña es lo que hay que revisar. Hasta ahora, una nube que llevaba nueve días rechazando los accesos de una instalación se veía igual que un coche dormido en el garaje: «visto hace 9 h», y nada más.
+
+Home Assistant se entera de lo mismo. Cada coche recibe un sensor **Data Link** (`sensor.<coche>_data_link`) que vale `fresh`, `no_new_data`, `age_unknown`, `login_refused` o `fetch_failed`, con desde cuándo, el error y el próximo intento como atributos. Se publica incluso mientras Mate espera tras un acceso rechazado, y caduca por sí solo a los 21 minutos — así que `unavailable` significa que el lector se ha detenido, no que el coche esté callado. Basta una automatización: avísame cuando no haya estado ni `fresh` ni `no_new_data` durante una hora.
+
+En los ajustes hay una tarjeta nueva, **📡 Enlace con la nube**: las últimas 24 horas como una tira de ventanas de cinco minutos, y siete días de recuentos — cuántas lecturas, cuántas traían un dato actual, cuántas fallaron, cuántas rechazó la nube y cuántos accesos gastó cada parte de Mate. Cada celda y cada etiqueta se explica al pasar el ratón. La misma tabla entra ahora en el paquete de diagnóstico.
+
+Dos cosas más pequeñas. Una antigüedad de más de un día se escribe en días: nueve días sin contacto se leían «hace 216h». Y la comprobación de salud de Mate ya no declara un proceso muerto mientras la nube no lo deja entrar: está esperando, y ahora lo dice.
+
+Bajo la energía de un viaje, la etiqueta que decía **getEC** dice ahora **Medida por el coche**: era el nombre de un punto de acceso de la nube, no una palabra para las personas. **Nube Leapmotor** pasa a **Historial Leapmotor** por lo mismo — las dos cifras vienen de la nube, y lo que cambia es cuál: el viaje tal como lo registra el historial de la nube, o la energía que el coche midió por sí mismo en esa ventana. **Estimación Mate** no cambia.
+
 > Este manual está escrito para quien *usa* Mate, no para quien lo desarrolla. Explica cómo
 > configurarlo desde cero y qué hace cada página. Para los detalles técnicos internos está `ARCHITECTURE.md`.
 
@@ -47,10 +164,13 @@ programaciones…) y, si quieres, integrar los datos con **Home Assistant** (med
 - **No habla directamente con el coche.** Todo pasa por la nube de Leapmotor. Cuando Mate «consulta»
   la nube (polling) lee el **último estado conocido**: *no* despierta al coche y *no* descarga la
   batería. Es una operación segura y barata.
-- **Solo coches 100 % eléctricos (BEV).** Los modelos compatibles son **T03, B05, B10, C10** en sus
-  versiones eléctricas. Las versiones **REEV** (con extensor de autonomía de gasolina) **no** están
-  soportadas: los cálculos de energía, consumo y coste usarían la capacidad de batería equivocada y
-  saldrían distorsionados.
+- **Eléctricos y con extensor de autonomía.** Los modelos compatibles son **T03, B05, B10, C10**.
+  Sus versiones **REEV**, con extensor de autonomía de gasolina, están soportadas desde la **4.7.0**:
+  la página REEV, la gasolina por viaje y por periodo y los paquetes de batería REEV del asistente
+  están todos en la compilación normal. En un extensor de autonomía **no** se muestra la regeneración
+  — un generador que recarga la batería mientras conduces no se distingue de una frenada — y el
+  consumo eléctrico de un viaje con el generador se queda en la compilación BetaTester, donde puede
+  vigilarse.
 - **Solo la nube europea (Leapmotor International / Stellantis).** Las cuentas registradas en
   servidores de otras regiones (por ejemplo China) no pueden iniciar sesión. Fuera de Europa, hoy por
   hoy Mate no se puede usar.
@@ -346,8 +466,8 @@ coche está despierto Mate consulta [Open-Meteo](https://open-meteo.com) sobre s
 mucho una vez cada 20 minutos o cada 10 km, lo que llegue antes — y muestra el valor junto al del
 habitáculo. Está **desactivado por defecto**, porque la consulta envía la posición del coche a
 Open-Meteo: el único interruptor está en *Ajustes → valores por defecto de los trayectos*. El mismo
-dato se convierte en una entidad **Temperatura exterior** en Home Assistant y da a cada trayecto su
-temperatura de salida y de llegada.
+dato se convierte en una entidad **Temperatura exterior** en Home Assistant y da a cada trayecto
+lecturas en ruta, de las que salen su temperatura más alta y más baja.
 
 #### Las tres temperaturas: habitáculo, consigna del A/A y batería
 No todos los Leapmotor envían las tres. Mate distingue **tres situaciones diferentes**, porque
@@ -401,11 +521,44 @@ temperatura **desconocida** no dispara la preparación, y lo dice en el registro
 - **Altitud y temperatura exterior.** La nube de Leapmotor no da ninguna de las dos, así que unos
   minutos después de terminar un recorrido Mate consulta la traza GPS del trayecto contra
   [Open-Meteo](https://open-meteo.com) (gratis, sin clave, sin cuenta). El detalle gana entonces una
-  **línea de altitud bajo el gráfico de SoC y velocidad**, los metros **subidos y bajados**, y la
-  temperatura **a la salida y a la llegada** — no una media, para que una subida de valle a puerto
-  muestre la caída real. Entre las dos explican buena parte del consumo de un recorrido: subir cuesta
-  energía, el frío cuesta autonomía. Los trayectos registrados antes de que esto existiera tienen un
-  botón **Calcular la altimetría**, y todo el conjunto se puede desactivar en Ajustes.
+  **línea de altitud en el gráfico Datos del trayecto**, los metros **subidos y bajados** (fila
+  *Desnivel + / −*; su ⓘ explica cómo se cuentan), y la temperatura **más alta y más baja** del
+  trayecto — no una media, para que una subida de valle a puerto muestre la caída real. Entre las
+  dos explican buena parte del consumo de un recorrido: subir cuesta energía, el frío cuesta
+  autonomía. Los trayectos registrados antes de que esto existiera tienen un botón **Calcular la
+  altimetría**, y todo el conjunto se puede desactivar en Ajustes.
+- **En movimiento y detenido 🆕.** Bajo la duración, el detalle la divide entre el tiempo en
+  movimiento y el tiempo parado durante el trayecto (semáforos, atascos), según las lecturas de Mate
+  tomadas cada pocos segundos. Una parada entre trayectos unidos no cuenta para ninguno de los dos,
+  y un hueco en las lecturas aparece como *sin datos* en lugar de asignarse a uno de ellos.
+- **Velocidad mediana 🆕.** Bajo la velocidad media, el detalle da la mediana de las mismas lecturas
+  en movimiento, la velocidad por debajo de la cual quedó la mitad de ellas. Un tramo rápido breve
+  sube la media de un trayecto urbano, mientras que la mediana conserva su ritmo habitual.
+- **Velocidad máxima del coche 🆕.** Cuando el registro del recorrido en la nube del coche se asocia
+  al trayecto (el mismo que da el consumo oficial), el detalle muestra la velocidad máxima que midió
+  el propio coche. Las lecturas de Mate están separadas unos segundos y pierden los picos breves —
+  en un B10, hasta 21 km/h —, así que un trayecto sin ese registro conserva el valor muestreado,
+  marcado con una ⓘ.
+- **Potencia máxima y regeneración máxima 🆕.** El detalle indica la potencia más alta que entregó la
+  batería y la más alta que volvió a ella al frenar, a partir de la tensión y la corriente de la
+  batería que Mate lee en cada actualización. Las lecturas están separadas unos segundos, así que un
+  pico breve entre dos se pierde: los valores son un mínimo, y la ⓘ junto a ellos lo indica. No se
+  muestran en un coche con extensor de autonomía, igual que la regeneración.
+- **Temperatura de la batería 🆕.** El coche solo informa de una temperatura de la batería — la de su
+  celda más fría, en grados enteros — y el detalle indica sus valores durante el trayecto como un
+  único rango, del más bajo al más alto, por ejemplo 19 – 22 °C; la ⓘ junto a la fila aclara que es la
+  celda más fría. En invierno, el rango muestra lo fría que estaba la batería y cuánto la calentó el
+  trayecto.
+- **Gráfico Datos del trayecto 🆕.** El gráfico bajo el mapa se llama *Datos del trayecto* y se
+  divide en franjas que comparten un eje de tiempo, una línea de cursor y un recuadro al pasar el
+  ratón, con las líneas agrupadas por franja: **conducción** (velocidad y potencia de la batería —
+  por encima de cero la entrega, por debajo vuelve a ella), **batería** (SoC y autonomía que estima
+  el coche) y **altitud con la temperatura de la batería** (la de la celda más fría). Una franja
+  tiene como mucho dos escalas, una a cada lado, cada una con la unidad arriba y los números en el
+  color de su línea. Cada entrada de la leyenda muestra u oculta su línea — un cuadrado vacío señala
+  una línea oculta — y una franja con todas sus líneas ocultas se pliega. Todas las líneas empiezan
+  visibles; la elección se recuerda en el navegador para todos los trayectos. El recuadro empieza
+  con la hora del día, al segundo, y el minuto del trayecto.
 - **Consumo oficial desde la nube 🆕** — cuando está disponible, el **consumo, el rendimiento y el
   coste** de un trayecto salen de la **cifra oficial** de Leapmotor (el reparto real entre **marcha /
   climatización / otros**) en vez de solo de la estimación por % de batería. Justo después de un
@@ -887,11 +1040,15 @@ dividida en tres columnas.
   hash con sal, nunca en claro. **Si la pierdes**, no te quedas fuera para siempre: el campo *Contraseña
   nueva* no pide la anterior, así que desde cualquier dispositivo con la sesión todavía abierta puedes
   poner una nueva sin más. Si ya no queda ningún dispositivo con la sesión abierta, la variable de
-  entorno `MATE_AUTH_PASSWORD` tiene prioridad sobre lo que haya guardado.
+  entorno `MATE_AUTH_PASSWORD` tiene prioridad sobre lo que haya guardado. ⚠️ Tiene *prioridad*, no lo
+  sustituye: el hash olvidado sigue debajo en la base de datos, así que en cuanto vuelvas a entrar
+  pon una contraseña nueva (o quítala) en **Ajustes → Acceso** y solo después elimina la variable —
+  si la quitas antes, vuelve a mandar la que habías perdido.
 
 - **Base de datos** — el tamaño de la BD y la **retención del GPS**: puedes conservar los puntos GPS
-  «para siempre» (por defecto) o borrar los de más de 6/12/18/24 meses para ahorrar espacio. *Solo se
-  limpian las posiciones*: los trayectos, las cargas y las curvas de carga se quedan.
+  «para siempre» (por defecto) o borrar los de más de 6/12/18/24 meses para ahorrar espacio. *Solo
+  se limpian las posiciones*: los trayectos (con su ruta y las lecturas en ruta), las cargas y las
+  curvas de carga se quedan.
 - **Exportar / Copia de seguridad** — descargar **trayectos (CSV)**, **cargas (CSV)** y una **copia de
   la base de datos**. La copia llega **comprimida en gzip** (`leapmotor_mate.db.gz`) 🆕, enviada a
   trozos para que ni una base de datos grande tenga que caber entera en memoria. La restauración
@@ -1070,8 +1227,21 @@ ahí una caída no se puede distinguir del ruido, y Mate prefiere no dibujar nad
 inventado.
 
 **Tengo un Leapmotor REEV (híbrido con extensor de autonomía).**
-No está soportado: los cálculos de energía usarían la capacidad de batería de la versión BEV y saldrían
-mal. Mate es **solo para las versiones 100 % eléctricas**.
+Soportado desde la **4.7.0**, en la compilación normal: la página REEV, la gasolina por viaje y por
+periodo y los paquetes de batería REEV del asistente. Para eso ya no hace falta la compilación
+BetaTester.
+La cifra de gasolina es la del propio coche, tomada del historial por viaje de Leapmotor — el mismo
+número que muestra la app oficial. Donde la nube no tiene registro de un viaje, Mate calcula los
+litros a partir del depósito, y cada cifra dice cuál de las dos está en pantalla. La ventana de la
+nube es de unos 28 días, así que en un historial largo los viajes más antiguos leen la respuesta del
+depósito, que mide alrededor de un 20 % menos.
+Un viaje que no ha quemado nada lee `0 L` con *todo eléctrico* al lado, que no es lo mismo que un
+viaje cuyo depósito no se pudo leer: ese se queda en blanco.
+En un extensor de autonomía no se muestra la **regeneración**, porque un generador que recarga la
+batería mientras conduces no se distingue de una frenada.
+¿Ya usas la compilación BetaTester? No hace falta que te muevas: sigue funcionando. Si quieres
+hacerlo, es una copia de seguridad y una restauración, en ese orden:
+[De la compilación BetaTester a la oficial](BETA-TO-OFFICIAL.md).
 
 **No estoy en Europa.**
 Por ahora Mate solo funciona con la nube **europea** de Leapmotor. Las cuentas alojadas en servidores de

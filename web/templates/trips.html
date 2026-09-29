@@ -43,7 +43,8 @@
   <div class="hero-tile t-trips">
     <div class="hero-ico">🗺️</div>
     <div>
-      <div class="hero-val">{{ summary.count }}</div>
+      <div class="hero-val">{{ summary.count - (summary.cloud_zero_count or 0) }}</div>
+      {% if summary.cloud_zero_count %}<div class="text-xs text-slate-400">+ {{ summary.cloud_zero_count }} {{ t('cloud_zero_segments') }}</div>{% endif %}
       <div class="hero-label">{{ t('total_trips') }}</div>
     </div>
   </div>
@@ -59,7 +60,7 @@
          kilometres it covers — his own suggestion, and the right home for a technical value.
          Neutral colour on purpose: the good/amber/bad thresholds are about how efficiently the
          BATTERY drove you, which is not what this number answers. A BEV is untouched. #}
-      {% set eff_all = reev_total.kwh_100km if (is_reev and research and reev_total) else None %}
+      {% set eff_all = reev_total.kwh_100km if (is_reev and reev_total) else None %}
       {% if eff_all %}
       <div class="hero-val" style="color:#38bdf8">
         {{ eff_val(eff_all)|nice }}<span class="u">{{ eff_unit() }}</span>
@@ -76,7 +77,7 @@
   </div>
   {# On a range-extender the regen tile is hidden (a SoC delta stops measuring recovery once the
      generator is refilling the pack), which left an empty slot where the fuel belongs. #}
-  {% if is_reev and research and reev_summary and reev_summary.total_l %}
+  {% if is_reev and reev_summary and reev_summary.total_l %}
   <div class="hero-tile t-regen">
     <div class="hero-ico">⛽</div>
     <div>
@@ -190,6 +191,9 @@ if (HIGHLIGHT) {
     if (!e.target || e.target.id !== 'trips-calendar-month-wrap') return;
     const row = document.querySelector(`[data-trip-id="${HIGHLIGHT}"]`);
     if (row) {
+      for (let parent = row.parentElement; parent; parent = parent.parentElement) {
+        if (parent.tagName === 'DETAILS') parent.open = true;
+      }
       row.style.background = '#1a2e1a';
       row.style.border     = '1px solid #22c55e55';
       row.style.boxShadow  = 'inset 3px 0 0 #22c55e';

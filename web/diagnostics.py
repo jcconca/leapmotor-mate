@@ -11,6 +11,7 @@ import json
 import os
 import re
 import sqlite3
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -87,6 +88,19 @@ def _redact(text: str, vin: str | None = None) -> str:
     return text
 
 
+def _journal_line(mode) -> str:
+    """The journal mode, and for anything but WAL what it costs — the word alone means nothing to
+    the owner reading their own bundle. Outside WAL, readers block writers, which is how a busy
+    moment becomes `database is locked` and a poller stops storing frames (#338)."""
+    if mode is None:
+        return "unknown (could not be read)"
+    if str(mode).lower() == "wal":
+        return "wal"
+    return (f"⚠️ {mode} — NOT WAL: readers block writers here, so contention surfaces as "
+            "'database is locked'. The filesystem under the database cannot honour WAL "
+            "(a network share usually cannot).")
+
+
 # ── system snapshot ──────────────────────────────────────────────────────────
 def build_system_info(version: str) -> dict:
     """Cheap (no live cloud call) support snapshot for the card + the bundle header."""
@@ -139,6 +153,7 @@ def build_system_info(version: str) -> dict:
         "model": (vehicle or {}).get("car_type") or "—",
         "year": (vehicle or {}).get("year") or "—",
         "vin_masked": mask_vin((vehicle or {}).get("vin")),
+        "journal_mode": db_reader.journal_mode(),
         "battery_kwh": settings.get("battery_capacity_kwh", "—"),
         # The SoH denominator, snapshotted the first time the capacity is saved. Without it a
         # bundle cannot answer "why is my battery health above 100%" — the number that decides it
@@ -758,7 +773,7 @@ def _abilities_section() -> str:
         return f"(unparseable abilities value: {raw!r})"
     known = None
     try:
-        from leapmotor_api.models import VehicleAbility
+        from mate_vehicle_abilities import VehicleAbility
         known = {int(m) for m in VehicleAbility}     # the codes the library can actually name
 
         def _name(c: int) -> str:
@@ -795,6 +810,67 @@ def _abilities_section() -> str:
     return "\n".join(out)
 
 
+def _polling_section() -> str:
+    """Seven days of what the poller got, and the link state as it stands — the figures #300 was
+    answered with by counting log lines. The stored error is cut to its class: it is a message
+    from the cloud, and a message may quote what was sent."""
+    try:
+        p = db_reader.polling_summary()
+    except Exception as exc:  # noqa: BLE001
+        return f"(unavailable: {exc})"
+    head = ("day         polls  current  old  noclock  empty  failed  refused  no-poll-min  "
+            "logins ok p/w  refused p/w")
+    lines = [head]
+    for d in p["days"]:
+        lines.append(f"{d['day']}  {d['polls']:5d}  {d['current']:7d}  {d['old']:3d}  {d['noclock']:7d}  "
+                     f"{d['empty']:5d}  {d['failed']:6d}  {d['refused']:7d}  {d['no_poll_min']:11d}  "
+                     f"{d['login_ok_poller']:6d} / {d['login_ok_web']:<4d}  "
+                     f"{d['login_refused_poller']:4d} / {d['login_refused_web']}")
+    lines.append(f"history from : {p['first_at'] or '—'} (local)")
+    try:
+        link = json.loads(db_reader.get_setting("poll_link", "") or "{}")
+    except ValueError:
+        link = {}
+    reason = str(link.get("reason") or "").split(":")[0][:40] or "—"
+    lines.append(f"link         : {link.get('state') or '—'} since {link.get('since') or '—'} · "
+                 f"{reason} · bad_creds={bool(link.get('bad_creds'))}")
+    try:
+        beat = float(db_reader.get_setting("last_loop_ts", "0") or 0)
+        lines.append(f"heartbeat    : {int(time.time() - beat)} s ago" if beat else "heartbeat    : never")
+    except (TypeError, ValueError):
+        lines.append("heartbeat    : ?")
+    return "\n".join(lines)
+
+
+def _cloud_history_section() -> str:
+    """Did the cloud's own trip history arrive, and did it carry fuel? Counts only — this text is
+    attached to public issues. Since 4.5.3 every install stages these records, range-extender
+    accounts included; each one carries `driveReevOil`, the fuel the car's cloud says that drive
+    burned. A report that "the petrol figures are wrong" splits in two here, and the halves have
+    opposite answers: Mate read the field and got it wrong, or the cloud never sent one."""
+    try:
+        s = db_reader.cloud_history_state()
+    except Exception as exc:  # noqa: BLE001
+        return f"(unavailable: {exc})"
+    if not s["staged"]:
+        return ("staged drives : none — the cloud history worker has not stored anything on this "
+                "install\n"
+                f"cloud-linked  : {s['promoted_trips']} trips · import setting "
+                f"{s['import_setting'] if s['import_setting'] is not None else 'unset'}")
+    oil_max = "—" if s["oil_max"] is None else _n(s["oil_max"], 3)
+    return "\n".join([
+        f"staged drives : {s['mileage']} (plus {s['charge']} charge records)",
+        f"window        : {s['first_at'] or '—'} → {s['last_at'] or '—'} (UTC)",
+        # Present-and-zero vs absent: a BEV reports the field on every drive with value 0.0, and
+        # that must not read like a cloud that sent nothing.
+        f"driveReevOil  : {s['oil_present']} of {s['mileage']} carry the field · "
+        f"{s['oil_positive']} of {s['mileage']} above zero · max {oil_max} (unit unverified)",
+        f"cloud-linked  : {s['promoted_trips']} trips · import setting "
+        f"{s['import_setting'] if s['import_setting'] is not None else 'unset'}",
+        f"last sync     : {(s['last_sync'] or '—')[:200]}",
+    ])
+
+
 def build_bundle(version: str, parts=_BUNDLE_PARTS, lines: int = 300, signals: dict | None = None) -> str:
     """One redacted text blob to attach to an issue. `parts` selects which sections to include
     (any of 'info', 'poller', 'web', 'signals'); a one-line version header is always present. The
@@ -811,7 +887,15 @@ def build_bundle(version: str, parts=_BUNDLE_PARTS, lines: int = 300, signals: d
             f"VIN          : {info['vin_masked']}",
             f"Battery kWh  : {info['battery_kwh']}  (SoH reference: {info['battery_nominal_kwh']})",
             f"Language     : {info['language']}",
+            # 🔴 Mate 4 runs one of two cloud clients, and they fail differently: #327 was a
+            # refusal that only happens on the bundled SDK. @arzthilfe's bundle did not say
+            # which he had, and it had to be inferred from the shape of a log line.
+            # `api_backend` selects the SDK only on an explicit '0'.
+            f"Cloud client : " + ("bundled SDK (leapmotor-api)"
+                                  if os.environ.get("MATE_API_V2") == "0"
+                                  else "independent (mate-api)"),
             f"DB size (MB) : {info['db_size_mb']}",
+            f"Journal mode : {_journal_line(info['journal_mode'])}",
             f"Rows         : trips={info['counts']['trips']} "
             f"charges={info['counts']['charges']} positions={info['counts']['positions']}",
             f"Poll (s)     : parked={info['poll_parked']} driving={info['poll_driving']}",
@@ -852,6 +936,9 @@ def build_bundle(version: str, parts=_BUNDLE_PARTS, lines: int = 300, signals: d
         out += ["", "----- charges the car took, and what Mate had in hand -----",
                 _missed_charges_section()]
         out += ["", "----- vehicle abilities (what the car DECLARES it can do) -----", _abilities_section()]
+        out += ["", "----- polling (last 7 days, local days) -----", _polling_section()]
+        out += ["", "----- cloud trip history (staged from Leapmotor) -----",
+                _cloud_history_section()]
     if "poller" in want:
         out += ["", "----- poller log (full retained window) -----", read_full_log("poller")]
     if "web" in want:

@@ -228,6 +228,22 @@ CREATE TABLE IF NOT EXISTS offline_gaps (
     energy_kwh     REAL               -- ΔSoC × the capacity in force then; 0 when the SoC rose
 );
 CREATE INDEX IF NOT EXISTS idx_offline_gaps_vehicle ON offline_gaps(vehicle_id, started_at);
+
+-- One row per poll and per login attempt, so "is Mate getting data?" is answered from a table
+-- instead of counted by hand out of the log (#300). `outcome` is what the REQUEST did; the frame's
+-- own age sits beside it, measured at poll time, because an answer can carry a frame that is hours
+-- old and a repeated frame can still be current. Kept a week.
+CREATE TABLE IF NOT EXISTS poll_log (
+    id           INTEGER PRIMARY KEY,
+    at           TEXT NOT NULL,       -- UTC ISO, the poll clock
+    vehicle_id   INTEGER,             -- NULL on a login row: the session is the account's
+    kind         TEXT NOT NULL,       -- 'poll' | 'login'
+    outcome      TEXT NOT NULL,       -- poll: answer|empty|failed|refused · login: ok|refused|failed
+    frame_age_s  INTEGER,             -- poll+answer: host clock − car clock; NULL = no clock, or ahead
+    process      TEXT,                -- login: 'poller' | 'web'
+    reason       TEXT                 -- failed/refused: the error, truncated
+);
+CREATE INDEX IF NOT EXISTS idx_poll_log_at ON poll_log(at);
 """
 
 
@@ -246,6 +262,17 @@ def ensure_schema(conn) -> None:
     Idempotent by construction (every step is `IF NOT EXISTS` or `if column not in ...`) and cheap:
     a handful of PRAGMAs on a database that is already up to date."""
     conn.executescript(SCHEMA)
+    conn.execute("""CREATE TABLE IF NOT EXISTS charging_places (
+        id INTEGER PRIMARY KEY, vehicle_id INTEGER NOT NULL,
+        name TEXT NOT NULL, latitude REAL NOT NULL, longitude REAL NOT NULL,
+        radius_m REAL NOT NULL, rate REAL NOT NULL, enabled INTEGER NOT NULL DEFAULT 1
+    )""")
+    place_cols = {r[1] for r in conn.execute("PRAGMA table_info(charges)")}
+    for column, kind in (("charging_place_id", "INTEGER"), ("charging_place_name", "TEXT"),
+                         ("charging_place_rate", "REAL"), ("charging_place_source", "TEXT")):
+        if column not in place_cols:
+            conn.execute(f"ALTER TABLE charges ADD COLUMN {column} {kind}")
+
     # migration: add battery_min_temp if missing (existing DBs)
     cols = {r[1] for r in conn.execute("PRAGMA table_info(positions)").fetchall()}
     if "climate_target_temp" not in cols:
@@ -260,6 +287,18 @@ def ensure_schema(conn) -> None:
         conn.execute("ALTER TABLE positions ADD COLUMN climate_cooling INTEGER DEFAULT NULL")
     if "climate_heating" not in cols:
         conn.execute("ALTER TABLE positions ADD COLUMN climate_heating INTEGER DEFAULT NULL")
+    # The SoH estimate asks, once per charge, whether anyone was sitting in the car with the cabin
+    # heater or cooler running — a charge like that has its energy/SoC ratio distorted and is left
+    # out of the figure. `LIMIT 1` makes it look cheap; it is the opposite, because the answer is
+    # almost always "no" and proving a negative without an index means reading every frame in the
+    # window. Measured on a real database: 618.05 ms for 33 charges, `SCAN positions`, none of them
+    # with the cabin in use. With this index the plan is a SEARCH and the same 33 cost 0.10 ms.
+    # Partial, so it holds 2081 rows out of 374 511 and costs nothing to keep.
+    # 🔴 HERE, not in SCHEMA: on a database made before these columns existed they arrive with the
+    # ALTERs just above, and an index on them inside the schema script fails on a fresh database and
+    # takes the WHOLE script down with it — 1037 red tests the first time.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_positions_cabin_use ON positions(vehicle_id, recorded_at)"
+                 " WHERE climate_cooling = 1 OR climate_heating = 1")
     if "climate_defrost" not in cols:
         conn.execute("ALTER TABLE positions ADD COLUMN climate_defrost INTEGER DEFAULT NULL")
     if "trunk_open" not in cols:
@@ -295,6 +334,14 @@ def ensure_schema(conn) -> None:
     # discharge must NOT be counted as standby/vampire drain).
     if "ac_port_mode" not in cols:
         conn.execute("ALTER TABLE positions ADD COLUMN ac_port_mode INTEGER DEFAULT NULL")
+    # V2L samples are a handful among hundreds of thousands of frames, and every page asks whether
+    # the car has used V2L lately. Without this the question is a scan of the whole window — 19731
+    # rows and 12.7 ms on a real database, four times that on an add-on, for an answer that is
+    # almost always "no". Partial, so it holds only the V2L rows and costs nothing to keep.
+    # 🔴 HERE, not in SCHEMA: the column it indexes is added by the ALTER above, so an index on it
+    # inside the schema script fails on a fresh database and takes the WHOLE script down with it.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_positions_v2l ON positions(vehicle_id, recorded_at)"
+                 " WHERE ac_port_mode = 2")
     # migration: extended climate panel (validated on-car 2026-06-20) — fan level (1941 acAirVolume,
     # 1-7), recirculation (1943: 1=recirc / 0=fresh), base climate mode (3713: 0 auto/1 cool/3 heat/4 vent).
     if "fan_level" not in cols:
@@ -506,6 +553,11 @@ def ensure_schema(conn) -> None:
     tpcols = {r[1] for r in conn.execute("PRAGMA table_info(trip_positions)").fetchall()}
     if "elevation_m" not in tpcols:
         conn.execute("ALTER TABLE trip_positions ADD COLUMN elevation_m REAL")
+    # migration: the poll's readings the trip detail shows, kept with each point so they outlive the
+    # positions retention — battery power (kW, + out of the pack), coldest cell, range, outside air.
+    for _c in ("power_kw", "battery_temp_c", "range_km", "outside_temp_c"):
+        if _c not in tpcols:
+            conn.execute(f"ALTER TABLE trip_positions ADD COLUMN {_c} REAL")
     # migration: geohash (7 chars ≈ 150m cell) of start/end lat-lon — the "similar trips"
     # comparator's fast pre-filter (web/db_reader.py get_similar_trips groups candidates by
     # this before validating the actual route). Set at trip creation/finalize (below) going
